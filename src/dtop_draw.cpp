@@ -477,6 +477,7 @@ namespace Cpu {
 
 	// BPU layout variables  
 	int bpu_b_x, bpu_b_y, bpu_b_width, bpu_b_height;
+	int bpu_columns = 2;
 	int cpu_graph_width, bpu_graph_width;
 	
 	// CPU Governor state
@@ -612,9 +613,18 @@ namespace Cpu {
 			if (show_bpu) {
 				bpu_meter = Draw::Meter{bpu_b_width - (show_temps ? 23 - (b_column_size <= 1 and b_columns == 1 ? 6 : 0) : 11), "temp"};
 				if (not bpu.usage.empty()) {
-					bpu_graph_upper = Draw::Graph{bpu_graph_width - 2, graph_up_height, "temp", bpu.usage.at(0), graph_symbol, false, true};
-					if (not single_graph and bpu.usage.size() > 1)
-						bpu_graph_lower = Draw::Graph{bpu_graph_width - 2, graph_low_height, "temp", bpu.usage.at(1 % bpu.usage.size()), graph_symbol, Config::getB("cpu_invert_lower"), true};
+					const auto& aggregate_usage = bpu.aggregate_usage.empty() ? bpu.usage.at(0) : bpu.aggregate_usage;
+					bpu_graph_upper = Draw::Graph{bpu_graph_width - 2, graph_up_height, "temp", aggregate_usage, graph_symbol, false, true};
+					if (not single_graph and bpu.usage.size() > 1) {
+						size_t secondary_index = 1;
+						for (size_t index = 0; index < bpu.names.size(); index++) {
+							if (bpu.names[index] == "GPU") {
+								secondary_index = index;
+								break;
+							}
+						}
+						bpu_graph_lower = Draw::Graph{bpu_graph_width - 2, graph_low_height, "temp", bpu.usage.at(secondary_index), graph_symbol, Config::getB("cpu_invert_lower"), true};
+					}
 				}
 				// 初始化BPU核心图形
 				bpu_core_graphs.clear();
@@ -622,9 +632,10 @@ namespace Cpu {
 					bpu_core_graphs.emplace_back(5 * b_column_size + extra_width, 1, "temp", core_data, graph_symbol);
 				}
 				
-				if (show_temps and bpu.has_temp_sensor and not bpu.temp.empty()) {
+				if (show_temps and bpu.has_temp_sensor and (not bpu.aggregate_temp.empty() or not bpu.temp.empty())) {
 					bpu_temp_graphs.clear();
-					bpu_temp_graphs.emplace_back(5, 1, "", bpu.temp.at(0), graph_symbol, false, false, bpu.temp_max, -23);
+					const auto& aggregate_temp = bpu.aggregate_temp.empty() ? bpu.temp.at(0) : bpu.aggregate_temp;
+					bpu_temp_graphs.emplace_back(5, 1, "", aggregate_temp, graph_symbol, false, false, bpu.temp_max, -23);
 				}
 			}
 			if (mid_line) {
@@ -795,7 +806,9 @@ namespace Cpu {
 		if (show_bpu and not bpu.usage.empty()) {
 			int bpu_right_boundary = bpu_b_x + bpu_b_width - 1;
 			
-			auto bpu_total_usage = bpu.usage.empty() ? 0 : bpu.usage.at(0).empty() ? 0 : bpu.usage.at(0).back();
+			auto bpu_total_usage = not bpu.aggregate_usage.empty()
+				? bpu.aggregate_usage.back()
+				: bpu.usage.empty() or bpu.usage.at(0).empty() ? 0 : bpu.usage.at(0).back();
 			
 			int bpu_meter_width = bpu_b_width - (show_temps ? 23 - (b_column_size <= 1 and b_columns == 1 ? 6 : 0) : 11);
 			int bpu_header_width = 4 + bpu_meter_width + 4 + 1;
@@ -809,26 +822,25 @@ namespace Cpu {
 					+ Theme::c("main_fg") + '%';
 			}
 			
-			if (show_temps and bpu.has_temp_sensor and not bpu.temp.empty() and not bpu.temp.at(0).empty()) {
-				const auto [temp, unit] = celsius_to(bpu.temp.at(0).back(), temp_scale);
-				const auto& temp_color = Theme::g("temp").at(clamp(bpu.temp.at(0).back() * 100 / bpu.temp_max, 0ll, 100ll));
+			if (show_temps and bpu.has_temp_sensor and (not bpu.aggregate_temp.empty() or (not bpu.temp.empty() and not bpu.temp.at(0).empty()))) {
+				const auto& aggregate_temp = bpu.aggregate_temp.empty() ? bpu.temp.at(0) : bpu.aggregate_temp;
+				const auto [temp, unit] = celsius_to(aggregate_temp.back(), temp_scale);
+				const auto& temp_color = Theme::g("temp").at(clamp(aggregate_temp.back() * 100 / bpu.temp_max, 0ll, 100ll));
 				
 				out += ' ' + Theme::c("inactive_fg")
 					+ graph_bg * 5
 					+ Mv::l(5)
 					+ temp_color
-					+ bpu_temp_graphs.at(0)(bpu.temp.at(0), data_same or redraw);
+					+ bpu_temp_graphs.at(0)(aggregate_temp, data_same or redraw);
 				out += rjust(to_string(temp), 4)
 					+ Theme::c("main_fg") + unit;
 			}
 			out += Theme::c("div_line") + Symbols::v_line;
 
-			const int bpu_columns = 2;
-			int bpu_line_width_needed = (show_temps ? 15 : 9);
 			const int bpu_column_width = bpu_b_width / bpu_columns;
+			const bool show_bpu_unit_graphs = bpu_column_width >= 22;
+			const int bpu_line_width_needed = show_bpu_unit_graphs ? 21 : 10;
 			
-			const vector<string> bpu_core_names = {"BPU", "GPU", "VPU", "JPU", "Main", "MCU"};
-
 			for (const auto& n : iota(0, (int)bpu.usage.size())) {
 				// Calculate row and column for row-major layout (left-to-right, top-to-bottom)
 				const int bpu_row = n / bpu_columns;        // Row index (0, 1, 2, ...)
@@ -841,37 +853,35 @@ namespace Cpu {
 				if (bpu_b_x + bpu_cx + bpu_line_width_needed >= bpu_right_boundary) break;
 				if (bpu_cy >= bpu_b_height - 2) break;
 
-				string core_name = (n < (int)bpu_core_names.size()) ? bpu_core_names[n] : "B" + to_string(n);
+				string core_name = (n < (int)bpu.names.size()) ? bpu.names[n] : "B" + to_string(n);
+				const bool temperature_only = n < (int)bpu.temperature_only.size() and bpu.temperature_only[n];
 				
 				out += Mv::to(bpu_b_y + bpu_cy + 1, bpu_b_x + bpu_cx + 1)
 					+ Theme::c("main_fg")
 					+ Fx::b + core_name + Fx::ub;
 				out += ' ';
-				out += Theme::c("inactive_fg")
-					+ graph_bg * 10
-					+ Mv::l(10);
-				
-				// Main域和MCU域使用温度颜色和数据，其他使用使用率
-				if ((n == 4 || n == 5) && show_temps && bpu.has_temp_sensor && n < (int)bpu.temp.size() && !bpu.temp.at(n).empty()) {
-					// 温度图表（Main域和MCU域）
-					const auto& temp_color = Theme::g("temp").at(clamp(bpu.temp.at(n).back() * 100 / bpu.temp_max, 0ll, 100ll));
-					out += temp_color + bpu_core_graphs.at(n)(bpu.temp.at(n), data_same or redraw);
-				} else {
-					// 使用率图表（BPU, GPU, VPU, JPU）
-					out += Theme::g("temp").at(bpu.usage.at(n).empty() ? 0 : bpu.usage.at(n).back())
-						+ bpu_core_graphs.at(n)(bpu.usage.at(n), data_same or redraw);
+				const bool show_unit_temperature = temperature_only and show_temps and bpu.has_temp_sensor
+					and n < (int)bpu.temp.size() and not bpu.temp.at(n).empty();
+				const long long unit_value = show_unit_temperature
+					? bpu.temp.at(n).back()
+					: bpu.usage.at(n).empty() ? 0 : bpu.usage.at(n).back();
+				const auto& unit_color = Theme::g("temp").at(show_unit_temperature
+					? clamp(unit_value * 100 / bpu.temp_max, 0ll, 100ll)
+					: clamp(unit_value, 0ll, 100ll));
+
+				if (show_bpu_unit_graphs) {
+					out += Theme::c("inactive_fg") + graph_bg * 10 + Mv::l(10) + unit_color;
+					out += show_unit_temperature
+						? bpu_core_graphs.at(n)(bpu.temp.at(n), data_same or redraw)
+						: bpu_core_graphs.at(n)(bpu.usage.at(n), data_same or redraw);
 				}
 
-				// Main域和MCU域显示温度，其他显示使用率百分比
-				if ((n == 4 || n == 5) && show_temps && bpu.has_temp_sensor && n < (int)bpu.temp.size() && !bpu.temp.at(n).empty()) {
-					// 显示温度（Main域和MCU域）
-					const auto [temp, unit] = celsius_to(bpu.temp.at(n).back(), temp_scale);
-					const auto& temp_color = Theme::g("temp").at(clamp(bpu.temp.at(n).back() * 100 / bpu.temp_max, 0ll, 100ll));
-					out += temp_color + rjust(to_string(temp), 3) + Theme::c("main_fg") + unit;
-				} else {
-					// 显示使用率百分比（BPU, GPU, VPU, JPU）
-					out += rjust(to_string(bpu.usage.at(n).empty() ? 0 : bpu.usage.at(n).back()), 3)
-						+ Theme::c("main_fg") + '%';
+				if (show_unit_temperature) {
+					const auto [temp, unit] = celsius_to(unit_value, temp_scale);
+					out += unit_color + rjust(to_string(temp), 3) + Theme::c("main_fg") + unit;
+				}
+				else {
+					out += unit_color + rjust(to_string(unit_value), 3) + Theme::c("main_fg") + '%';
 				}
 
 				out += Theme::c("div_line") + Symbols::v_line; 
@@ -1749,7 +1759,11 @@ namespace Draw {
 					using namespace Cpu;
 		const bool show_bpu = Bpu::has_bpu;
 			width = round((double)Term::width * width_p / 100);
-			height = max(8, (int)ceil((double)Term::height * (trim(boxes) == "cpu" ? 100 : height_p) / 100));
+			const int estimated_bpu_width = show_bpu ? min(45, width / 3) : 0;
+			bpu_columns = show_bpu and estimated_bpu_width < 22 ? 1 : 2;
+			const int bpu_rows = show_bpu ? (Bpu::bpu_count + bpu_columns - 1) / bpu_columns : 0;
+			const int cpu_min_height = show_bpu ? max(8, bpu_rows + 5) : 8;
+			height = max(cpu_min_height, (int)ceil((double)Term::height * (trim(boxes) == "cpu" ? 100 : height_p) / 100));
 			x = 1;
 			y = cpu_bottom ? Term::height - height + 1 : 1;
 
@@ -1796,7 +1810,12 @@ namespace Draw {
 			
 			// Create BPU card box if BPU is available
 			if (show_bpu) {
-				const string bpu_title = uresize("BPU " + Bpu::platform_type, bpu_b_width - 8);
+				string platform_name = Bpu::platform_type;
+				if (platform_name == "rdks600") platform_name = "RDK S600";
+				else if (platform_name == "rdks100") platform_name = "RDK S100";
+				else if (platform_name == "rdkx5") platform_name = "RDK X5";
+				else if (platform_name == "rdkx3") platform_name = "RDK X3";
+				const string bpu_title = uresize("BPU " + platform_name, bpu_b_width - 8);
 				box += createBox(bpu_b_x, bpu_b_y, bpu_b_width, bpu_b_height, "", false, bpu_title);
 			}
 		}
