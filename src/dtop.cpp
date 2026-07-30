@@ -703,22 +703,41 @@ int main(int argc, char **argv) {
 	}
 
 	//? Try to find and set a UTF-8 locale
-	if (bool found = false; not str_to_upper((string)std::setlocale(LC_ALL, NULL)).ends_with("UTF-8")) {
-		if (const string lang = (string)getenv("LANG"); str_to_upper(lang).ends_with("UTF-8")) {
-			found = true;
-			std::setlocale(LC_ALL, lang.c_str());
+	const auto current_locale = []() {
+		const char* locale = std::setlocale(LC_ALL, NULL);
+		return locale == nullptr ? string{} : string{locale};
+	};
+	if (bool found = false; not str_to_upper(current_locale()).ends_with("UTF-8")) {
+		if (const char* lang_env = getenv("LANG"); lang_env != nullptr) {
+			const string lang = lang_env;
+			if (str_to_upper(lang).ends_with("UTF-8") and std::setlocale(LC_ALL, lang.c_str()) != nullptr) {
+				found = true;
+			}
 		}
-		else if (const string loc = std::locale("").name(); not loc.empty()) {
+
+		if (not found) {
 			try {
+				const string loc = std::locale("").name();
 				for (auto& l : ssplit(loc, ';')) {
 					if (str_to_upper(l).ends_with("UTF-8")) {
-						found = true;
-						std::setlocale(LC_ALL, l.substr(l.find('=') + 1).c_str());
-						break;
+						const string locale = l.substr(l.find('=') + 1);
+						if (std::setlocale(LC_ALL, locale.c_str()) != nullptr) {
+							found = true;
+							break;
+						}
 					}
 				}
 			}
-			catch (const std::out_of_range&) { found = false; }
+			catch (const std::exception&) {}
+		}
+
+		if (not found) {
+			for (const string fallback : {"C.UTF-8", "C.utf8", "en_US.UTF-8"}) {
+				if (std::setlocale(LC_ALL, fallback.c_str()) != nullptr) {
+					found = true;
+					break;
+				}
+			}
 		}
 
 		if (not found and Global::utf_force)
@@ -728,7 +747,7 @@ int main(int argc, char **argv) {
 			exit(1);
 		}
 		else
-			Logger::debug("Setting LC_ALL=" + (string)std::setlocale(LC_ALL, NULL));
+			Logger::debug("Setting LC_ALL=" + current_locale());
 	}
 
 	//? Initialize terminal and set options
