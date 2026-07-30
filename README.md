@@ -12,7 +12,7 @@
 
 ![image-20250730203240082](https://img2024.cnblogs.com/blog/3505969/202507/3505969-20250730203244517-348834443.png)
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**但是在串口环境下无法快速的查看当前系统资源，于是！！！Dtop闪亮出炉！！！！！！！**目前已适配**RDKS100**和**RDKX5**，可以在这个界面快速的查看BPU等系统资源的占用率，以及可以点击右上角快速切换CPU的调度策略！
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**但是在串口环境下无法快速的查看当前系统资源，于是！！！Dtop闪亮出炉！！！！！！！**目前已适配**RDKS600**、**RDKS100**和**RDKX5**，可以在这个界面快速的查看BPU等系统资源的占用率，以及可以点击右上角快速切换CPU的调度策略！
 
 ![image-20250730203625062](https://img2024.cnblogs.com/blog/3505969/202507/3505969-20250730203629184-2144438723.png)
 
@@ -29,7 +29,14 @@ source ~/.bashrc
 dtop
 ```
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;目前V1.1.0版本已实现RDKS100和RDKX5上BPU、GPU、VPU、JPU的使用率监控，以及S100Main和MCU域的温度监控；下一个版本将实现完整的内存分配显示以及RDK信息的展示
+RDK S600 请从当前源码编译，以包含新增的平台适配：
+
+```bash
+make -j$(nproc)
+sudo make install
+```
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;当前代码已实现RDKS600上4个BPU核心、GPU、3个VPU和2个JPU的使用率监控，并根据`BPUx-TSx`传感器显示BPU平均温度；同时保留RDKS100和RDKX5的BPU、GPU、VPU、JPU监控，以及S100 Main和MCU域温度监控。
 
 ![image-20250802204402978](https://img2024.cnblogs.com/blog/3505969/202508/3505969-20250802204405140-1529566624.png)
 

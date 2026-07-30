@@ -12,3 +12,4 @@ Description: dtop is a command line resource monitor created from btop,
  Currently supported RDK Platforms are:
   - RDK X5
   - RDK S100/S100P
+  - RDK S600

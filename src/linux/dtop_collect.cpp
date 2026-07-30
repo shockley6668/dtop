@@ -37,6 +37,15 @@ namespace fs = std::filesystem;
 namespace rng = std::ranges;
 using namespace Tools;
 
+namespace {
+	long long temperature_to_celsius(const long long raw_temperature) {
+		const long long magnitude = raw_temperature < 0 ? -raw_temperature : raw_temperature;
+		if (magnitude >= 1000000) return raw_temperature / 1000000;
+		if (magnitude >= 1000) return raw_temperature / 1000;
+		return raw_temperature;
+	}
+}
+
 //? --------------------------------------------------- FUNCTIONS -----------------------------------------------------
 
 namespace Cpu {
@@ -101,7 +110,7 @@ namespace Shared {
 		//? Initialize BPU platform detection
 		Bpu::detect_platform();
 		if (Bpu::has_bpu) {
-			Logger::info("BPU detected: " + Bpu::platform_type + " with " + to_string(Bpu::bpu_count) + " core(s)");
+			Logger::info("BPU detected: " + Bpu::platform_type + " with " + to_string(Bpu::bpu_count) + " monitored unit(s)");
 		}
 
 		pageSize = sysconf(_SC_PAGE_SIZE);
@@ -278,13 +287,14 @@ namespace Cpu {
 						const string basepath = path / string("temp" + to_string(i) + "_");
 						const string label = readfile(fs::path(basepath + "label"), "temp" + to_string(i));
 						const string sensor_name = pname + "/" + label;
-						const int64_t temp = stol(readfile(fs::path(basepath + "input"), "0")) / 1000;
-						const int64_t high = stol(readfile(fs::path(basepath + "max"), "80000")) / 1000;
-						const int64_t crit = stol(readfile(fs::path(basepath + "crit"), "95000")) / 1000;
+						const int64_t temp = temperature_to_celsius(stol(readfile(fs::path(basepath + "input"), "0")));
+						const int64_t high = temperature_to_celsius(stol(readfile(fs::path(basepath + "max"), "80000")));
+						const int64_t crit = temperature_to_celsius(stol(readfile(fs::path(basepath + "crit"), "95000")));
 
 						found_sensors[sensor_name] = {fs::path(basepath + "input"), label, temp, high, crit};
 
-						if (not got_cpu and (label.starts_with("Package id") or label.starts_with("Tdie"))) {
+						if (not got_cpu and (label.starts_with("Package id") or label.starts_with("Tdie")
+						or label.starts_with("CPU") or label.starts_with("CMN"))) {
 							got_cpu = true;
 							cpu_sensor = sensor_name;
 						}
@@ -303,14 +313,14 @@ namespace Cpu {
 					if (not fs::exists(basepath / "temp")) continue;
 					const string label = readfile(basepath / "type", "temp" + to_string(i));
 					const string sensor_name = "thermal" + to_string(i) + "/" + label;
-					const int64_t temp = stol(readfile(basepath / "temp", "0")) / 1000;
+					const int64_t temp = temperature_to_celsius(stol(readfile(basepath / "temp", "0")));
 
 					int64_t high, crit;
 					for (int ii = 0; fs::exists(basepath / string("trip_point_" + to_string(ii) + "_temp")); ii++) {
 						const string trip_type = readfile(basepath / string("trip_point_" + to_string(ii) + "_type"));
 						if (not is_in(trip_type, "high", "critical")) continue;
 						auto& val = (trip_type == "high" ? high : crit);
-						val = stol(readfile(basepath / string("trip_point_" + to_string(ii) + "_temp"), "0")) / 1000;
+						val = temperature_to_celsius(stol(readfile(basepath / string("trip_point_" + to_string(ii) + "_temp"), "0")));
 					}
 					if (high < 1) high = 80;
 					if (crit < 1) crit = 95;
@@ -344,7 +354,7 @@ namespace Cpu {
 
 		const auto& cpu_sensor = (not Config::getS("cpu_sensor").empty() and found_sensors.contains(Config::getS("cpu_sensor")) ? Config::getS("cpu_sensor") : Cpu::cpu_sensor);
 
-		found_sensors.at(cpu_sensor).temp = stol(readfile(found_sensors.at(cpu_sensor).path, "0")) / 1000;
+		found_sensors.at(cpu_sensor).temp = temperature_to_celsius(stol(readfile(found_sensors.at(cpu_sensor).path, "0")));
 		current_cpu.temp.at(0).push_back(found_sensors.at(cpu_sensor).temp);
 		current_cpu.temp_max = found_sensors.at(cpu_sensor).crit;
 		if (current_cpu.temp.at(0).size() > 20) current_cpu.temp.at(0).pop_front();
@@ -353,7 +363,7 @@ namespace Cpu {
 			vector<string> done;
 			for (const auto& sensor : core_sensors) {
 				if (v_contains(done, sensor)) continue;
-				found_sensors.at(sensor).temp = stol(readfile(found_sensors.at(sensor).path, "0")) / 1000;
+				found_sensors.at(sensor).temp = temperature_to_celsius(stol(readfile(found_sensors.at(sensor).path, "0")));
 				done.push_back(sensor);
 			}
 			for (const auto& [core, temp] : core_mapping) {
@@ -1623,374 +1633,301 @@ namespace Bpu {
 	int bpu_count = 0;
 	bpu_info current_bpu;
 
-	void detect_platform() {
-		try {
-			ifstream model_file("/sys/firmware/devicetree/base/model");
-			if (model_file.good()) {
-				string model_content;
-				getline(model_file, model_content);
-				model_file.close();
-				
-				Logger::debug("Bpu::detect_platform() - Model: '" + model_content + "'");
-				
-				if (s_contains(model_content, "S100")) {
-					platform_type = "rdks100";
-					bpu_count = 6; // BPU0, GPU, VPU, JPU, Main, MCU
-					has_bpu = true;
-					Logger::debug("Bpu::detect_platform() - Detected RDK S100 platform with " + to_string(bpu_count) + " devices");
-				}
-				else if (s_contains(model_content, "X5")) {
-					platform_type = "rdkx5";
-					bpu_count = 4; // BPU0, GPU, VPU, JPU
-					has_bpu = true;
-					Logger::debug("Bpu::detect_platform() - Detected RDK X5 platform with " + to_string(bpu_count) + " devices");
-				}
-				else if (s_contains(model_content, "X3")) {
-					platform_type = "rdkx3";
-					bpu_count = 2; // BPU0, BPU1
-					has_bpu = true;
-					Logger::debug("Bpu::detect_platform() - Detected RDK X3 platform with " + to_string(bpu_count) + " devices");
-				}
-				else {
-					platform_type = "unknown";
-					bpu_count = 0;
-					has_bpu = false;
-				}
-			}
-		}
-		catch (...) {
-			platform_type = "unknown";
-			bpu_count = 0;
-			has_bpu = false;
+	namespace {
+		constexpr size_t usage_history_limit = 40;
+		constexpr size_t temperature_history_limit = 20;
+
+		void push_history(deque<long long>& history, const long long value, const size_t limit = usage_history_limit) {
+			history.push_back(value);
+			while (history.size() > limit) history.pop_front();
 		}
 
-		if (has_bpu) {
-			current_bpu.usage.resize(bpu_count);
-			current_bpu.temp.resize(bpu_count);
-			current_bpu.has_temp_sensor = (platform_type == "rdks100" or platform_type == "rdkx5");
-			current_bpu.temp_max = 100; // Default max temperature in Celsius
-			
-			// Initialize temperature data with default value to ensure it's never empty
-			if (current_bpu.has_temp_sensor) {
-				// Initialize temperature for all devices with default values
-				for (int i = 0; i < bpu_count; i++) {
-					current_bpu.temp[i].push_back(0); // Initial temperature value
-				}
-				Logger::debug("Bpu::detect_platform() - Initialized temperature data for " + to_string(bpu_count) + " devices on " + platform_type);
-			}
+		bool read_integer(const fs::path& path, long long& value) {
+			const string content = readfile(path, "");
+			if (content.empty() or not isint(content)) return false;
+			value = stoll(content);
+			return true;
 		}
-	}
 
-	//* Platform-specific data collection functions
-	void collect_rdk_s100_data(bpu_info& bpu) {
-		Logger::debug("Bpu::collect_rdk_s100_data() - Collecting S100 platform data");
-		
-		// BPU0 - Brain Processing Unit
-		string bpu0_usage = readfile("/sys/devices/system/bpu/bpu0/ratio", "0");
-		if (not bpu0_usage.empty() and isint(bpu0_usage)) {
-			const long long usage = stol(bpu0_usage);
-			bpu.usage[0].push_back(clamp(usage, 0ll, 100ll));
-			while (bpu.usage[0].size() > 40) bpu.usage[0].pop_front();
-			Logger::debug("Bpu::collect_rdk_s100_data() - BPU0 usage: " + to_string(usage) + "%");
+		long long latest_value(const deque<long long>& history) {
+			return history.empty() ? 0 : history.back();
 		}
-		
-		// GPU - Mali GPU with DVFS utilization parsing
-		Logger::debug("Bpu::collect_rdk_s100_data() - Starting GPU processing");
-		try {
-			string dvfs_content = readfile("/sys/kernel/debug/mali0/dvfs_utilization", "");
-			Logger::debug("Bpu::collect_rdk_s100_data() - DVFS content length: " + to_string(dvfs_content.length()));
-			
-			long long busy_time = 0, idle_time = 0;
-			if (!dvfs_content.empty()) {
-				Logger::debug("Bpu::collect_rdk_s100_data() - DVFS content: '" + dvfs_content + "'");
-				
-				// Simple parsing using basic string operations
-				size_t busy_pos = dvfs_content.find("busy_time:");
-				if (busy_pos != string::npos) {
-					size_t start_pos = busy_pos + 10; // Skip "busy_time:"
-					// Skip whitespace after colon
-					while (start_pos < dvfs_content.length() && std::isspace(dvfs_content[start_pos])) {
-						start_pos++;
+
+		bool parse_named_counter(const string& content, const string& name, long long& value) {
+			size_t start = content.find(name);
+			if (start == string::npos) return false;
+			start += name.size();
+			while (start < content.size() and std::isspace(static_cast<unsigned char>(content[start]))) start++;
+			size_t end = start;
+			while (end < content.size() and std::isdigit(static_cast<unsigned char>(content[end]))) end++;
+			if (end == start) return false;
+			value = stoll(content.substr(start, end - start));
+			return true;
+		}
+
+		void collect_usage_path(bpu_info& bpu, const size_t index, const fs::path& path) {
+			if (index >= bpu.usage.size()) return;
+			long long usage = 0;
+			read_integer(path, usage);
+			push_history(bpu.usage[index], clamp(usage, 0ll, 100ll));
+		}
+
+		void collect_gpu_usage(bpu_info& bpu, const size_t index, const fs::path& path) {
+			if (index >= bpu.usage.size()) return;
+
+			const string content = readfile(path, "");
+			long long usage = 0;
+			if (not content.empty() and isint(content)) {
+				usage = stoll(content);
+			}
+			else {
+				long long busy_time = 0, idle_time = 0;
+				if (parse_named_counter(content, "busy_time:", busy_time)
+				and parse_named_counter(content, "idle_time:", idle_time)) {
+					const long long busy_delta = busy_time - bpu.gpu_busy_old;
+					const long long idle_delta = idle_time - bpu.gpu_idle_old;
+					const long long total_delta = busy_delta + idle_delta;
+					if ((bpu.gpu_busy_old > 0 or bpu.gpu_idle_old > 0)
+					and busy_delta >= 0 and idle_delta >= 0 and total_delta > 0) {
+						usage = busy_delta * 100 / total_delta;
 					}
-					size_t end_pos = dvfs_content.find(' ', start_pos);
-					if (end_pos == string::npos) end_pos = dvfs_content.length();
-					
-					if (start_pos < dvfs_content.length()) {
-						string busy_str = dvfs_content.substr(start_pos, end_pos - start_pos);
-						busy_str = trim(busy_str);
-						Logger::debug("Bpu::collect_rdk_s100_data() - Busy string: '" + busy_str + "'");
-						if (isint(busy_str)) {
-							busy_time = std::stoll(busy_str);
-							Logger::debug("Bpu::collect_rdk_s100_data() - Busy time: " + to_string(busy_time));
-						}
-					}
-				}
-				
-				size_t idle_pos = dvfs_content.find("idle_time:");
-				if (idle_pos != string::npos) {
-					size_t start_pos = idle_pos + 10; // Skip "idle_time:"
-					// Skip whitespace after colon
-					while (start_pos < dvfs_content.length() && std::isspace(dvfs_content[start_pos])) {
-						start_pos++;
-					}
-					size_t end_pos = dvfs_content.find('\n', start_pos);
-					if (end_pos == string::npos) end_pos = dvfs_content.length();
-					
-					if (start_pos < dvfs_content.length()) {
-						string idle_str = dvfs_content.substr(start_pos, end_pos - start_pos);
-						idle_str = trim(idle_str);
-						Logger::debug("Bpu::collect_rdk_s100_data() - Idle string: '" + idle_str + "'");
-						if (isint(idle_str)) {
-							idle_time = std::stoll(idle_str);
-							Logger::debug("Bpu::collect_rdk_s100_data() - Idle time: " + to_string(idle_time));
-						}
-					}
-				}
-				
-				Logger::debug("Bpu::collect_rdk_s100_data() - Parsed times: busy=" + to_string(busy_time) + ", idle=" + to_string(idle_time));
-				
-				// Calculate usage based on delta from last collection
-				long long gpu_usage = 0;
-				if (busy_time > 0 || idle_time > 0) {
-					long long busy_delta = busy_time - bpu.gpu_busy_old;
-					long long idle_delta = idle_time - bpu.gpu_idle_old;
-					long long total_delta = busy_delta + idle_delta;
-					
-					Logger::debug("Bpu::collect_rdk_s100_data() - GPU deltas: busy=" + to_string(busy_delta) + ", idle=" + to_string(idle_delta));
-					
-					if (total_delta > 0 && (bpu.gpu_busy_old > 0 || bpu.gpu_idle_old > 0)) {
-						gpu_usage = (busy_delta * 100) / total_delta;
-						Logger::debug("Bpu::collect_rdk_s100_data() - Calculated GPU usage: " + to_string(gpu_usage) + "%");
-					}
-					
-					// Update old values for next calculation
 					bpu.gpu_busy_old = busy_time;
 					bpu.gpu_idle_old = idle_time;
 				}
-				
-				bpu.usage[1].push_back(clamp(gpu_usage, 0ll, 100ll));
-				while (bpu.usage[1].size() > 40) bpu.usage[1].pop_front();
-				Logger::debug("Bpu::collect_rdk_s100_data() - Final GPU usage: " + to_string(gpu_usage) + "%");
 			}
-			else {
-				bpu.usage[1].push_back(0);
-				while (bpu.usage[1].size() > 40) bpu.usage[1].pop_front();
-				Logger::debug("Bpu::collect_rdk_s100_data() - GPU usage: 0% (empty dvfs)");
-			}
-		}
-		catch (const std::exception& e) {
-			Logger::debug("Bpu::collect_rdk_s100_data() - GPU parsing error: " + string(e.what()));
-			bpu.usage[1].push_back(0);
-			while (bpu.usage[1].size() > 40) bpu.usage[1].pop_front();
-		}
-		Logger::debug("Bpu::collect_rdk_s100_data() - GPU processing completed");
-		
-		// VPU - Video Processing Unit
-		string vpu_usage = readfile("/sys/kernel/debug/vpu/loading", "0");
-		if (not vpu_usage.empty() and isint(vpu_usage)) {
-			const long long usage = stol(vpu_usage);
-			bpu.usage[2].push_back(clamp(usage, 0ll, 100ll));
-			while (bpu.usage[2].size() > 40) bpu.usage[2].pop_front();
-			Logger::debug("Bpu::collect_rdk_s100_data() - VPU usage: " + to_string(usage) + "%");
-		}
-		
-		// JPU - JPEG Processing Unit
-		string jpu_usage = readfile("/sys/kernel/debug/jpu/loading", "0");
-		if (not jpu_usage.empty() and isint(jpu_usage)) {
-			const long long usage = stol(jpu_usage);
-			bpu.usage[3].push_back(clamp(usage, 0ll, 100ll));
-			while (bpu.usage[3].size() > 40) bpu.usage[3].pop_front();
-			Logger::debug("Bpu::collect_rdk_s100_data() - JPU usage: " + to_string(usage) + "%");
-		}
-		
-		// Main域温度 - temp1和temp2的平均值
-		long long main_temp_total = 0;
-		int main_temp_count = 0;
-		
-		// 读取temp1_input (Main域第一个传感器)
-		for (const string temp_path : {"/sys/class/hwmon/hwmon0/temp1_input", "/sys/class/hwmon/hwmon1/temp1_input", "/sys/class/hwmon/hwmon2/temp1_input"}) {
-			string temp1_content = readfile(temp_path, "");
-			if (not temp1_content.empty() and isint(temp1_content)) {
-				main_temp_total += stol(temp1_content) / 1000; // 转换为摄氏度
-				main_temp_count++;
-				Logger::debug("Bpu::collect_rdk_s100_data() - Main temp1: " + to_string(stol(temp1_content) / 1000) + "°C from " + temp_path);
-				break;
-			}
-		}
-		
-		// 读取temp2_input (Main域第二个传感器)
-		for (const string temp_path : {"/sys/class/hwmon/hwmon0/temp2_input", "/sys/class/hwmon/hwmon1/temp2_input", "/sys/class/hwmon/hwmon2/temp2_input"}) {
-			string temp2_content = readfile(temp_path, "");
-			if (not temp2_content.empty() and isint(temp2_content)) {
-				main_temp_total += stol(temp2_content) / 1000; // 转换为摄氏度
-				main_temp_count++;
-				Logger::debug("Bpu::collect_rdk_s100_data() - Main temp2: " + to_string(stol(temp2_content) / 1000) + "°C from " + temp_path);
-				break;
-			}
-		}
-		
-		// 计算Main域平均温度
-		long long main_avg_temp = (main_temp_count > 0) ? (main_temp_total / main_temp_count) : 0;
-		bpu.usage[4].push_back(0); // Main域没有使用率，显示为0%
-		while (bpu.usage[4].size() > 40) bpu.usage[4].pop_front();
-		bpu.temp[4].push_back(main_avg_temp); // 存储Main域温度
-		while (bpu.temp[4].size() > 40) bpu.temp[4].pop_front();
-		Logger::debug("Bpu::collect_rdk_s100_data() - Main domain avg temp: " + to_string(main_avg_temp) + "°C");
-		
-		// MCU域温度 - temp3和temp4的平均值
-		long long mcu_temp_total = 0;
-		int mcu_temp_count = 0;
-		
-		// 读取temp3_input (MCU域第一个传感器)
-		for (const string temp_path : {"/sys/class/hwmon/hwmon0/temp3_input", "/sys/class/hwmon/hwmon1/temp3_input", "/sys/class/hwmon/hwmon2/temp3_input"}) {
-			string temp3_content = readfile(temp_path, "");
-			if (not temp3_content.empty() and isint(temp3_content)) {
-				mcu_temp_total += stol(temp3_content) / 1000; // 转换为摄氏度
-				mcu_temp_count++;
-				Logger::debug("Bpu::collect_rdk_s100_data() - MCU temp3: " + to_string(stol(temp3_content) / 1000) + "°C from " + temp_path);
-				break;
-			}
-		}
-		
-		// 读取temp4_input (MCU域第二个传感器)
-		for (const string temp_path : {"/sys/class/hwmon/hwmon0/temp4_input", "/sys/class/hwmon/hwmon1/temp4_input", "/sys/class/hwmon/hwmon2/temp4_input"}) {
-			string temp4_content = readfile(temp_path, "");
-			if (not temp4_content.empty() and isint(temp4_content)) {
-				mcu_temp_total += stol(temp4_content) / 1000; // 转换为摄氏度
-				mcu_temp_count++;
-				Logger::debug("Bpu::collect_rdk_s100_data() - MCU temp4: " + to_string(stol(temp4_content) / 1000) + "°C from " + temp_path);
-				break;
-			}
-		}
-		
-		// 计算MCU域平均温度
-		long long mcu_avg_temp = (mcu_temp_count > 0) ? (mcu_temp_total / mcu_temp_count) : 0;
-		bpu.usage[5].push_back(0); // MCU域没有使用率，显示为0%
-		while (bpu.usage[5].size() > 40) bpu.usage[5].pop_front();
-		bpu.temp[5].push_back(mcu_avg_temp); // 存储MCU域温度
-		while (bpu.temp[5].size() > 40) bpu.temp[5].pop_front();
-		Logger::debug("Bpu::collect_rdk_s100_data() - MCU domain avg temp: " + to_string(mcu_avg_temp) + "°C");
-	}
-	
-	void collect_rdk_x5_data(bpu_info& bpu) {
-		Logger::debug("Bpu::collect_rdk_x5_data() - Collecting X5 platform data");
-		
-		// BPU0 - Brain Processing Unit
-		string bpu0_usage = readfile("/sys/devices/system/bpu/bpu0/ratio", "0");
-		if (not bpu0_usage.empty() and isint(bpu0_usage)) {
-			const long long usage = stol(bpu0_usage);
-			bpu.usage[0].push_back(clamp(usage, 0ll, 100ll));
-			while (bpu.usage[0].size() > 40) bpu.usage[0].pop_front();
-			Logger::debug("Bpu::collect_rdk_x5_data() - BPU0 usage: " + to_string(usage) + "%");
-		}
-		
-		// GPU - Graphics Processing Unit
-		string gpu_usage = readfile("/sys/kernel/debug/gc/load", "0");
-		if (not gpu_usage.empty() and isint(gpu_usage)) {
-			const long long usage = stol(gpu_usage);
-			bpu.usage[1].push_back(clamp(usage, 0ll, 100ll));
-			while (bpu.usage[1].size() > 40) bpu.usage[1].pop_front();
-			Logger::debug("Bpu::collect_rdk_x5_data() - GPU usage: " + to_string(usage) + "%");
-		}
-		
-		// VPU - Video Processing Unit
-		string vpu_usage = readfile("/sys/kernel/debug/vpu/loading", "0");
-		if (not vpu_usage.empty() and isint(vpu_usage)) {
-			const long long usage = stol(vpu_usage);
-			bpu.usage[2].push_back(clamp(usage, 0ll, 100ll));
-			while (bpu.usage[2].size() > 40) bpu.usage[2].pop_front();
-			Logger::debug("Bpu::collect_rdk_x5_data() - VPU usage: " + to_string(usage) + "%");
-		}
-		
-		// JPU - JPEG Processing Unit
-		string jpu_usage = readfile("/sys/kernel/debug/jpu/loading", "0");
-		if (not jpu_usage.empty() and isint(jpu_usage)) {
-			const long long usage = stol(jpu_usage);
-			bpu.usage[3].push_back(clamp(usage, 0ll, 100ll));
-			while (bpu.usage[3].size() > 40) bpu.usage[3].pop_front();
-			Logger::debug("Bpu::collect_rdk_x5_data() - JPU usage: " + to_string(usage) + "%");
-		}
-	}
-	
-	void collect_rdk_x3_data(bpu_info& bpu) {
-		Logger::debug("Bpu::collect_rdk_x3_data() - Collecting X3 platform data");
-		
-		// BPU0 - Brain Processing Unit 0
-		string bpu0_usage = readfile("/sys/devices/system/bpu/bpu0/ratio", "0");
-		if (not bpu0_usage.empty() and isint(bpu0_usage)) {
-			const long long usage = stol(bpu0_usage);
-			bpu.usage[0].push_back(clamp(usage, 0ll, 100ll));
-			while (bpu.usage[0].size() > 40) bpu.usage[0].pop_front();
-			Logger::debug("Bpu::collect_rdk_x3_data() - BPU0 usage: " + to_string(usage) + "%");
-		}
-		
-		// BPU1 - Brain Processing Unit 1
-		string bpu1_usage = readfile("/sys/devices/system/bpu/bpu1/ratio", "0");
-		if (not bpu1_usage.empty() and isint(bpu1_usage)) {
-			const long long usage = stol(bpu1_usage);
-			bpu.usage[1].push_back(clamp(usage, 0ll, 100ll));
-			while (bpu.usage[1].size() > 40) bpu.usage[1].pop_front();
-			Logger::debug("Bpu::collect_rdk_x3_data() - BPU1 usage: " + to_string(usage) + "%");
-		}
-	}
 
-	auto collect(const bool no_update) -> bpu_info& {
-		if (Runner::stopping or not has_bpu or (no_update and not current_bpu.usage.empty() and not current_bpu.usage[0].empty())) 
-			return current_bpu;
+			push_history(bpu.usage[index], clamp(usage, 0ll, 100ll));
+		}
 
-		auto& bpu = current_bpu;
+		long long average_usage(const bpu_info& bpu, const size_t start, const size_t count) {
+			long long total = 0;
+			size_t samples = 0;
+			for (size_t index = start; index < min(start + count, bpu.usage.size()); index++) {
+				if (bpu.usage[index].empty()) continue;
+				total += bpu.usage[index].back();
+				samples++;
+			}
+			return samples == 0 ? 0 : total / static_cast<long long>(samples);
+		}
 
-		Logger::debug("Bpu::collect() - Starting collection for platform: " + platform_type + " with " + to_string(bpu_count) + " devices");
+		bool read_temperature(const fs::path& path, long long& temperature) {
+			long long raw_temperature = 0;
+			if (not read_integer(path, raw_temperature)) return false;
+			temperature = temperature_to_celsius(raw_temperature);
+			return true;
+		}
 
-		try {
-			// Platform-specific data collection
-			if (platform_type == "rdks100") {
-				collect_rdk_s100_data(bpu);
-			}
-			else if (platform_type == "rdkx5") {
-				collect_rdk_x5_data(bpu);
-			}
-			else if (platform_type == "rdkx3") {
-				collect_rdk_x3_data(bpu);
-			}
-			
-			if (bpu.has_temp_sensor) {
-				string temp_path;
-				Logger::debug("Bpu::collect() - Platform type: " + platform_type + ", has_temp_sensor: " + (bpu.has_temp_sensor ? "true" : "false"));
-				if (platform_type == "rdks100") {
-					temp_path = "/sys/class/hwmon/hwmon0/temp5_input";
+		bool read_first_hwmon_temperature(const string& filename, long long& temperature) {
+			const fs::path hwmon_root = "/sys/class/hwmon";
+			if (not fs::exists(hwmon_root)) return false;
+			try {
+				for (const auto& directory : fs::directory_iterator(hwmon_root)) {
+					if (read_temperature(directory.path() / filename, temperature)) return true;
 				}
-				else if (platform_type == "rdkx5") {
-					temp_path = "/sys/class/hwmon/hwmon0/temp2_input";
-				}
-				Logger::debug("Bpu::collect() - Temp path: " + temp_path);
-				if (not temp_path.empty()) {
-					const string temp_str = readfile(temp_path, "0");
-					if (not temp_str.empty() and isint(temp_str)) {
-						const long long temp_millicelsius = stol(temp_str);
-						const long long temp_celsius = temp_millicelsius / 1000;
-						Logger::debug("Bpu::collect() - Temperature conversion: " + to_string(temp_millicelsius) + " milliC -> " + to_string(temp_celsius) + "°C");
-						if (platform_type == "rdkx5") {
-							if (not bpu.usage[0].empty() and bpu.usage[0].back() > 0) {
-								bpu.temp[0].push_back(temp_celsius);
-							}
-							else {
-								bpu.temp[0].push_back(0);
-							}
+			}
+			catch (...) {}
+			return false;
+		}
+
+		vector<long long> read_s600_bpu_temperatures() {
+			const long long missing = numeric_limits<long long>::min();
+			vector<long long> temperatures(4, missing);
+			vector<long long> totals(4, 0);
+			vector<int> samples(4, 0);
+			const fs::path hwmon_root = "/sys/class/hwmon";
+			const regex label_pattern("^BPU([0-3])-TS[0-9]+$");
+			if (not fs::exists(hwmon_root)) return temperatures;
+
+			try {
+				for (const auto& directory : fs::directory_iterator(hwmon_root)) {
+					for (const auto& entry : fs::directory_iterator(directory.path())) {
+						const string filename = entry.path().filename().string();
+						if (not filename.starts_with("temp") or not filename.ends_with("_label")) continue;
+
+						const string label = readfile(entry.path(), "");
+						std::smatch match;
+						if (not std::regex_match(label, match, label_pattern)) continue;
+
+						const size_t core = static_cast<size_t>(stoul(match[1].str()));
+						const string input_filename = filename.substr(0, filename.size() - 5) + "input";
+						long long temperature = 0;
+						if (read_temperature(entry.path().parent_path() / input_filename, temperature)) {
+							totals[core] += temperature;
+							samples[core]++;
 						}
-						else {
-							bpu.temp[0].push_back(temp_celsius);
-						}
-						
-						while (bpu.temp[0].size() > 20) bpu.temp[0].pop_front();
 					}
 				}
 			}
-		}
-		catch (const std::exception& e) {
-			Logger::debug("Bpu::collect() : " + (string)e.what());
+			catch (...) {}
+
+			for (size_t core = 0; core < temperatures.size(); core++) {
+				if (samples[core] > 0) temperatures[core] = totals[core] / samples[core];
+			}
+			return temperatures;
 		}
 
-		return bpu;
+		void collect_temperature_only_slot(bpu_info& bpu, const size_t index, const string& first_sensor, const string& second_sensor) {
+			if (index >= bpu.usage.size() or index >= bpu.temp.size()) return;
+			long long total = 0, temperature = 0;
+			int samples = 0;
+			if (read_first_hwmon_temperature(first_sensor, temperature)) {
+				total += temperature;
+				samples++;
+			}
+			if (read_first_hwmon_temperature(second_sensor, temperature)) {
+				total += temperature;
+				samples++;
+			}
+			push_history(bpu.usage[index], 0);
+			push_history(bpu.temp[index], samples > 0 ? total / samples : 0, temperature_history_limit);
+		}
+	}
+
+	void detect_platform() {
+		platform_type = "unknown";
+		bpu_count = 0;
+		has_bpu = false;
+		current_bpu = {};
+
+		const string model_content = readfile("/sys/firmware/devicetree/base/model", "");
+		Logger::debug("Bpu::detect_platform() - Model: '" + model_content + "'");
+
+		if (s_contains(model_content, "S600")) {
+			platform_type = "rdks600";
+			current_bpu.names = {"BPU0", "BPU1", "BPU2", "BPU3", "GPU", "VPU0", "VPU1", "VPU2", "JPU0", "JPU1"};
+			current_bpu.temperature_only.assign(current_bpu.names.size(), false);
+			current_bpu.has_temp_sensor = true;
+		}
+		else if (s_contains(model_content, "S100")) {
+			platform_type = "rdks100";
+			current_bpu.names = {"BPU", "GPU", "VPU", "JPU", "Main", "MCU"};
+			current_bpu.temperature_only = {false, false, false, false, true, true};
+			current_bpu.has_temp_sensor = true;
+		}
+		else if (s_contains(model_content, "X5")) {
+			platform_type = "rdkx5";
+			current_bpu.names = {"BPU", "GPU", "VPU", "JPU"};
+			current_bpu.temperature_only.assign(current_bpu.names.size(), false);
+			current_bpu.has_temp_sensor = true;
+		}
+		else if (s_contains(model_content, "X3")) {
+			platform_type = "rdkx3";
+			current_bpu.names = {"BPU0", "BPU1"};
+			current_bpu.temperature_only.assign(current_bpu.names.size(), false);
+		}
+
+		bpu_count = static_cast<int>(current_bpu.names.size());
+		has_bpu = bpu_count > 0;
+		if (not has_bpu) return;
+
+		current_bpu.usage.resize(bpu_count);
+		current_bpu.temp.resize(bpu_count);
+		current_bpu.temp_max = 100;
+		current_bpu.aggregate_usage.push_back(0);
+		if (current_bpu.has_temp_sensor) {
+			current_bpu.aggregate_temp.push_back(0);
+			for (auto& temperature : current_bpu.temp) temperature.push_back(0);
+		}
+
+		Logger::debug("Bpu::detect_platform() - Detected " + platform_type + " with " + to_string(bpu_count) + " monitored units");
+	}
+
+	void collect_rdk_s600_data(bpu_info& bpu) {
+		for (size_t core = 0; core < 4; core++) {
+			collect_usage_path(bpu, core, fs::path("/sys/devices/system/bpu") / ("bpu" + to_string(core)) / "ratio");
+		}
+
+		collect_gpu_usage(bpu, 4, "/sys/kernel/debug/mali0/dvfs_utilization");
+		for (size_t index = 0; index < 3; index++) {
+			const string device = index == 0 ? "vpu" : "vpu" + to_string(index);
+			collect_usage_path(bpu, 5 + index, fs::path("/sys/kernel/debug") / device / "loading");
+		}
+		for (size_t index = 0; index < 2; index++) {
+			const string device = index == 0 ? "jpu" : "jpu" + to_string(index);
+			collect_usage_path(bpu, 8 + index, fs::path("/sys/kernel/debug") / device / "loading");
+		}
+
+		long long aggregate_usage = 0;
+		if (not read_integer("/sys/devices/system/bpu/ratio", aggregate_usage)) {
+			aggregate_usage = average_usage(bpu, 0, 4);
+		}
+		push_history(bpu.aggregate_usage, clamp(aggregate_usage, 0ll, 100ll));
+
+		const long long missing = numeric_limits<long long>::min();
+		const auto temperatures = read_s600_bpu_temperatures();
+		long long temperature_total = 0;
+		int temperature_samples = 0;
+		for (size_t core = 0; core < min<size_t>(4, temperatures.size()); core++) {
+			if (temperatures[core] == missing) continue;
+			push_history(bpu.temp[core], temperatures[core], temperature_history_limit);
+			temperature_total += temperatures[core];
+			temperature_samples++;
+		}
+		if (temperature_samples > 0) {
+			push_history(bpu.aggregate_temp, temperature_total / temperature_samples, temperature_history_limit);
+		}
+
+		string status = "Bpu::collect_rdk_s600_data() - total=" + to_string(latest_value(bpu.aggregate_usage));
+		for (size_t index = 0; index < bpu.names.size(); index++) {
+			status += " " + bpu.names[index] + "=" + to_string(latest_value(bpu.usage[index]));
+		}
+		if (not bpu.aggregate_temp.empty()) status += " temp=" + to_string(bpu.aggregate_temp.back()) + "C";
+		Logger::debug(status);
+	}
+
+	void collect_rdk_s100_data(bpu_info& bpu) {
+		collect_usage_path(bpu, 0, "/sys/devices/system/bpu/bpu0/ratio");
+		collect_gpu_usage(bpu, 1, "/sys/kernel/debug/mali0/dvfs_utilization");
+		collect_usage_path(bpu, 2, "/sys/kernel/debug/vpu/loading");
+		collect_usage_path(bpu, 3, "/sys/kernel/debug/jpu/loading");
+		collect_temperature_only_slot(bpu, 4, "temp1_input", "temp2_input");
+		collect_temperature_only_slot(bpu, 5, "temp3_input", "temp4_input");
+		push_history(bpu.aggregate_usage, latest_value(bpu.usage[0]));
+
+		long long temperature = 0;
+		if (read_first_hwmon_temperature("temp5_input", temperature)) {
+			push_history(bpu.temp[0], temperature, temperature_history_limit);
+			push_history(bpu.aggregate_temp, temperature, temperature_history_limit);
+		}
+	}
+
+	void collect_rdk_x5_data(bpu_info& bpu) {
+		collect_usage_path(bpu, 0, "/sys/devices/system/bpu/bpu0/ratio");
+		collect_usage_path(bpu, 1, "/sys/kernel/debug/gc/load");
+		collect_usage_path(bpu, 2, "/sys/kernel/debug/vpu/loading");
+		collect_usage_path(bpu, 3, "/sys/kernel/debug/jpu/loading");
+		push_history(bpu.aggregate_usage, latest_value(bpu.usage[0]));
+
+		long long temperature = 0;
+		if (read_first_hwmon_temperature("temp2_input", temperature)) {
+			const long long displayed_temperature = latest_value(bpu.usage[0]) > 0 ? temperature : 0;
+			push_history(bpu.temp[0], displayed_temperature, temperature_history_limit);
+			push_history(bpu.aggregate_temp, displayed_temperature, temperature_history_limit);
+		}
+	}
+
+	void collect_rdk_x3_data(bpu_info& bpu) {
+		collect_usage_path(bpu, 0, "/sys/devices/system/bpu/bpu0/ratio");
+		collect_usage_path(bpu, 1, "/sys/devices/system/bpu/bpu1/ratio");
+		push_history(bpu.aggregate_usage, average_usage(bpu, 0, 2));
+	}
+
+	auto collect(const bool no_update) -> bpu_info& {
+		if (Runner::stopping or not has_bpu
+		or (no_update and not current_bpu.usage.empty() and not current_bpu.usage[0].empty())) {
+			return current_bpu;
+		}
+
+		try {
+			if (platform_type == "rdks600") collect_rdk_s600_data(current_bpu);
+			else if (platform_type == "rdks100") collect_rdk_s100_data(current_bpu);
+			else if (platform_type == "rdkx5") collect_rdk_x5_data(current_bpu);
+			else if (platform_type == "rdkx3") collect_rdk_x3_data(current_bpu);
+		}
+		catch (const std::exception& e) {
+			Logger::debug("Bpu::collect() : " + string(e.what()));
+		}
+
+		return current_bpu;
 	}
 }
