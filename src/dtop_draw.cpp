@@ -525,7 +525,7 @@ namespace Cpu {
 		out.reserve(width * height);
 		
 		// Get BPU data if available
-		const auto& bpu = show_bpu ? Bpu::collect(data_same) : Bpu::bpu_info{};
+		const auto& bpu = show_bpu ? Bpu::collect(true) : Bpu::bpu_info{};
 
 		//* Redraw elements not needed to be updated every cycle
 		if (redraw) {

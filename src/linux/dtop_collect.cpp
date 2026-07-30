@@ -22,6 +22,7 @@ tab-size = 4
 #include <unistd.h>
 #include <numeric>
 #include <regex>
+#include <mutex>
 #include <sys/statvfs.h>
 #include <netdb.h>
 #include <ifaddrs.h>
@@ -1636,6 +1637,12 @@ namespace Bpu {
 	namespace {
 		constexpr size_t usage_history_limit = 40;
 		constexpr size_t temperature_history_limit = 20;
+		constexpr size_t s600_bpu_core_count = 4;
+		constexpr int s600_usage_sample_interval_ms = 100;
+		array<long long, s600_bpu_core_count> s600_usage_sums{};
+		array<size_t, s600_bpu_core_count> s600_usage_samples{};
+		std::mutex s600_usage_mutex;
+		std::jthread s600_usage_sampler;
 
 		void push_history(deque<long long>& history, const long long value, const size_t limit = usage_history_limit) {
 			history.push_back(value);
@@ -1647,6 +1654,66 @@ namespace Bpu {
 			if (content.empty() or not isint(content)) return false;
 			value = stoll(content);
 			return true;
+		}
+
+		fs::path s600_bpu_ratio_path(const size_t core) {
+			return fs::path("/sys/devices/system/bpu") / ("bpu" + to_string(core)) / "ratio";
+		}
+
+		void sample_s600_bpu_usage(const std::stop_token stop_token) {
+			while (not stop_token.stop_requested()) {
+				array<long long, s600_bpu_core_count> usage_values{};
+				array<bool, s600_bpu_core_count> valid_samples{};
+				bool has_valid_sample = false;
+
+				for (size_t core = 0; core < s600_bpu_core_count; core++) {
+					if (read_integer(s600_bpu_ratio_path(core), usage_values[core])) {
+						usage_values[core] = clamp(usage_values[core], 0ll, 100ll);
+						valid_samples[core] = true;
+						has_valid_sample = true;
+					}
+				}
+
+				if (has_valid_sample) {
+					const std::scoped_lock lock(s600_usage_mutex);
+					for (size_t core = 0; core < s600_bpu_core_count; core++) {
+						if (not valid_samples[core]) continue;
+						s600_usage_sums[core] += usage_values[core];
+						s600_usage_samples[core]++;
+					}
+				}
+
+				sleep_ms(s600_usage_sample_interval_ms);
+			}
+		}
+
+		void start_s600_usage_sampler() {
+			if (s600_usage_sampler.joinable()) return;
+			s600_usage_sampler = std::jthread(sample_s600_bpu_usage);
+		}
+
+		void collect_s600_bpu_usage(bpu_info& bpu) {
+			array<long long, s600_bpu_core_count> usage_sums{};
+			array<size_t, s600_bpu_core_count> usage_samples{};
+			{
+				const std::scoped_lock lock(s600_usage_mutex);
+				usage_sums = s600_usage_sums;
+				usage_samples = s600_usage_samples;
+				s600_usage_sums.fill(0);
+				s600_usage_samples.fill(0);
+			}
+
+			for (size_t core = 0; core < s600_bpu_core_count; core++) {
+				long long usage = 0;
+				if (usage_samples[core] > 0) {
+					const long long samples = static_cast<long long>(usage_samples[core]);
+					usage = (usage_sums[core] + samples / 2) / samples;
+				}
+				else {
+					read_integer(s600_bpu_ratio_path(core), usage);
+				}
+				push_history(bpu.usage[core], clamp(usage, 0ll, 100ll));
+			}
 		}
 
 		long long latest_value(const deque<long long>& history) {
@@ -1707,7 +1774,7 @@ namespace Bpu {
 				total += bpu.usage[index].back();
 				samples++;
 			}
-			return samples == 0 ? 0 : total / static_cast<long long>(samples);
+			return samples == 0 ? 0 : (total + static_cast<long long>(samples) / 2) / static_cast<long long>(samples);
 		}
 
 		bool read_temperature(const fs::path& path, long long& temperature) {
@@ -1797,6 +1864,7 @@ namespace Bpu {
 			current_bpu.names = {"BPU0", "BPU1", "BPU2", "BPU3", "GPU", "VPU0", "VPU1", "VPU2", "JPU0", "JPU1"};
 			current_bpu.temperature_only.assign(current_bpu.names.size(), false);
 			current_bpu.has_temp_sensor = true;
+			start_s600_usage_sampler();
 		}
 		else if (s_contains(model_content, "S100")) {
 			platform_type = "rdks100";
@@ -1833,9 +1901,7 @@ namespace Bpu {
 	}
 
 	void collect_rdk_s600_data(bpu_info& bpu) {
-		for (size_t core = 0; core < 4; core++) {
-			collect_usage_path(bpu, core, fs::path("/sys/devices/system/bpu") / ("bpu" + to_string(core)) / "ratio");
-		}
+		collect_s600_bpu_usage(bpu);
 
 		collect_gpu_usage(bpu, 4, "/sys/kernel/debug/mali0/dvfs_utilization");
 		for (size_t index = 0; index < 3; index++) {
@@ -1847,10 +1913,7 @@ namespace Bpu {
 			collect_usage_path(bpu, 8 + index, fs::path("/sys/kernel/debug") / device / "loading");
 		}
 
-		long long aggregate_usage = 0;
-		if (not read_integer("/sys/devices/system/bpu/ratio", aggregate_usage)) {
-			aggregate_usage = average_usage(bpu, 0, 4);
-		}
+		const long long aggregate_usage = average_usage(bpu, 0, s600_bpu_core_count);
 		push_history(bpu.aggregate_usage, clamp(aggregate_usage, 0ll, 100ll));
 
 		const long long missing = numeric_limits<long long>::min();

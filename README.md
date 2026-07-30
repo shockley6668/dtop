@@ -20,11 +20,11 @@
 
 ### RDK S600（Ubuntu 24.04 / ARM64）
 
-以下预编译包适用于 **RDK S600、ARM64、Ubuntu 24.04、glibc 2.39 及以上版本**。程序在未设置 `LANG` 或 `LC_*` 环境变量时会自动使用 `C.UTF-8`，可直接在全新系统中运行。
+以下预编译包适用于 **RDK S600、ARM64、Ubuntu 24.04、glibc 2.39 及以上版本**。r2 版本每 100 ms 采样一次四个 BPU 核心，可捕获默认 2 秒界面刷新容易漏掉的短推理任务；程序在未设置 `LANG` 或 `LC_*` 环境变量时会自动使用 `C.UTF-8`，可直接在全新系统中运行。
 
 ```bash
-wget https://github.com/shockley6668/dtop/releases/download/s600-v1.1.0-20260730/dtop-rdk-s600-ubuntu24.04-arm64.tar.gz
-echo "4e6291d636ddf672e3f2a7c62c8ed58d2c82dbd4c61634f4a6ece4386f4c0d8a  dtop-rdk-s600-ubuntu24.04-arm64.tar.gz" | sha256sum -c -
+wget https://github.com/shockley6668/dtop/releases/download/s600-v1.1.0-r2-20260730/dtop-rdk-s600-ubuntu24.04-arm64.tar.gz
+echo "0bdcf98ccc997e15e1842666b3ac9a85cf92d51b9738b808884b19f1239aa35d  dtop-rdk-s600-ubuntu24.04-arm64.tar.gz" | sha256sum -c -
 tar -xzf dtop-rdk-s600-ubuntu24.04-arm64.tar.gz
 cd dtop-rdk-s600-ubuntu24.04-arm64
 sudo ./install.sh
