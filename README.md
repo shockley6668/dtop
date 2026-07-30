@@ -16,7 +16,22 @@
 
 ![image-20250730203625062](https://img2024.cnblogs.com/blog/3505969/202507/3505969-20250730203629184-2144438723.png)
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;想要体验仅需如下命令：
+## 快速安装
+
+### RDK S600（Ubuntu 24.04 / ARM64）
+
+以下预编译包适用于 **RDK S600、ARM64、Ubuntu 24.04、glibc 2.39 及以上版本**。程序在未设置 `LANG` 或 `LC_*` 环境变量时会自动使用 `C.UTF-8`，可直接在全新系统中运行。
+
+```bash
+wget https://github.com/shockley6668/dtop/releases/download/s600-v1.1.0-20260730/dtop-rdk-s600-ubuntu24.04-arm64.tar.gz
+echo "4e6291d636ddf672e3f2a7c62c8ed58d2c82dbd4c61634f4a6ece4386f4c0d8a  dtop-rdk-s600-ubuntu24.04-arm64.tar.gz" | sha256sum -c -
+tar -xzf dtop-rdk-s600-ubuntu24.04-arm64.tar.gz
+cd dtop-rdk-s600-ubuntu24.04-arm64
+sudo ./install.sh
+sudo dtop
+```
+
+### RDK S100 / RDK X5（Ubuntu 22.04 / ARM64）
 
 ```bash
 # 下载预编译文件
@@ -25,15 +40,17 @@ wget https://github.com/xiongqi123123/dtop/releases/download/v1.1.0/dtop-arm64-u
 tar -xzf dtop-arm64-ubuntu22.04.tar.gz
 sudo cp dtop /usr/local/bin/
 # 即可体验
-source ~/.bashrc
-dtop
+sudo dtop
 ```
 
-RDK S600 请从当前源码编译，以包含新增的平台适配：
+## 从源码编译
 
 ```bash
+git clone https://github.com/shockley6668/dtop.git
+cd dtop
 make -j$(nproc)
 sudo make install
+sudo dtop
 ```
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;当前代码已实现RDKS600上4个BPU核心、GPU、3个VPU和2个JPU的使用率监控，并根据`BPUx-TSx`传感器显示BPU平均温度；同时保留RDKS100和RDKX5的BPU、GPU、VPU、JPU监控，以及S100 Main和MCU域温度监控。
